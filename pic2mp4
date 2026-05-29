@@ -1,0 +1,891 @@
+from pathlib import Path
+
+from PIL import (
+    Image,
+    ImageOps,
+    ImageStat
+)
+
+import imageio.v2 as imageio
+import numpy as np
+import random
+import colorsys
+
+# ============================================
+# SETTINGS
+# ============================================
+
+INPUT_DIR = "input"
+OUTPUT_DIR = "output"
+
+SUPPORTED_EXTENSIONS = [
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".tif",
+    ".tiff"
+]
+
+# --------------------------------------------
+# Video Settings
+# --------------------------------------------
+
+SECONDS_PER_IMAGE = 1
+
+FPS = 30
+
+# --------------------------------------------
+# Resize Settings
+# --------------------------------------------
+
+# Set to None to keep original size
+OUTPUT_WIDTH = 1080
+
+# --------------------------------------------
+# Image Ordering
+# --------------------------------------------
+
+# 1 = filename order
+# 2 = alternating luminance
+# 3 = smooth luminance flow
+# 4 = output all versions
+# 5 = intelligent freshness sequencing
+# 6 = hue-angle
+# 7 = intelligent freshness sequencing
+
+
+ORDER_MODE = 7
+
+# ============================================
+
+Path(OUTPUT_DIR).mkdir(exist_ok=True)
+
+# ============================================
+# RESIZE
+# ============================================
+
+
+def resize_image(img):
+
+    if OUTPUT_WIDTH is None:
+        return img
+
+    scale = OUTPUT_WIDTH / img.width
+
+    new_h = int(img.height * scale)
+
+    return img.resize(
+        (OUTPUT_WIDTH, new_h),
+        Image.LANCZOS
+    )
+
+
+# ============================================
+# ENSURE EVEN DIMENSIONS
+# ============================================
+
+
+def ensure_even_dimensions(img):
+    """
+    H.264-friendly dimensions.
+    """
+
+    w, h = img.size
+
+    if w % 2 != 0:
+        w -= 1
+
+    if h % 2 != 0:
+        h -= 1
+
+    return img.crop((0, 0, w, h))
+
+
+# ============================================
+# IMAGE LUMINANCE
+# ============================================
+
+
+def get_image_luminance(image_path):
+
+    img = Image.open(image_path)
+
+    img = ImageOps.exif_transpose(img)
+
+    grayscale = img.convert("L")
+
+    stat = ImageStat.Stat(grayscale)
+
+    return stat.mean[0]
+
+
+# ============================================
+# ALTERNATING LUMINANCE ORDER
+# ============================================
+
+
+def alternate_brightness_order(image_files):
+
+    brightness_data = []
+
+    # ----------------------------------------
+    # Measure brightness
+    # ----------------------------------------
+
+    for image_file in image_files:
+
+        luminance = get_image_luminance(
+            image_file
+        )
+
+        brightness_data.append(
+            (image_file, luminance)
+        )
+
+    # ----------------------------------------
+    # Sort by brightness
+    # ----------------------------------------
+
+    brightness_data.sort(
+        key=lambda x: x[1]
+    )
+
+    ordered = []
+
+    low = 0
+    high = len(brightness_data) - 1
+
+    toggle = True
+
+    # ----------------------------------------
+    # Alternate bright/dark
+    # ----------------------------------------
+
+    while low <= high:
+
+        if toggle:
+
+            ordered.append(
+                brightness_data[high][0]
+            )
+
+            high -= 1
+
+        else:
+
+            ordered.append(
+                brightness_data[low][0]
+            )
+
+            low += 1
+
+        toggle = not toggle
+
+    return ordered
+
+
+# ============================================
+# SMOOTH LUMINANCE FLOW
+# ============================================
+
+
+def smooth_luminance_flow(image_files):
+
+    brightness_data = []
+
+    for image_file in image_files:
+
+        luminance = get_image_luminance(
+            image_file
+        )
+
+        brightness_data.append(
+            (image_file, luminance)
+        )
+
+    # Dark -> bright
+    brightness_data.sort(
+        key=lambda x: x[1]
+    )
+
+    return [
+        item[0]
+        for item in brightness_data
+    ]
+    
+def analyze_image(image_path):
+
+    img = Image.open(image_path)
+
+    img = ImageOps.exif_transpose(img)
+
+    img = img.convert("RGB")
+
+    # ========================================
+    # Orientation
+    # Uses filename
+    # ========================================
+
+    name = image_path.stem.lower()
+
+    if "landscape" in name:
+
+        orientation = "landscape"
+
+    elif "portrait" in name:
+
+        orientation = "portrait"
+
+    else:
+
+        # fallback
+        w, h = img.size
+
+        orientation = (
+            "landscape"
+            if w >= h
+            else "portrait"
+        )
+
+    # ========================================
+    # Black & White Detection
+    # ========================================
+
+    rgb_stat = ImageStat.Stat(img)
+
+    r, g, b = rgb_stat.mean
+
+    color_variance = (
+        abs(r - g) +
+        abs(g - b) +
+        abs(r - b)
+    )
+
+    is_bw = color_variance < 12
+
+    # ========================================
+    # Dominant Color
+    # ========================================
+
+    if is_bw:
+
+        color_bin = "bw"
+
+    else:
+
+        channels = {
+            "red": r,
+            "green": g,
+            "blue": b
+        }
+
+        color_bin = max(
+            channels,
+            key=channels.get
+        )
+
+    return {
+        "path": image_path,
+        "orientation": orientation,
+        "is_bw": is_bw,
+        "color_bin": color_bin
+    }
+    
+# ============================================
+# HUE-ANGLE IMAGE ANALYSIS
+# ============================================
+
+def analyze_image_hue(image_path):
+
+    img = Image.open(image_path)
+
+    img = ImageOps.exif_transpose(img)
+
+    img = img.convert("RGB")
+
+    # ========================================
+    # Orientation
+    # ========================================
+
+    name = image_path.stem.lower()
+
+    if "landscape" in name:
+
+        orientation = "landscape"
+
+    elif "portrait" in name:
+
+        orientation = "portrait"
+
+    else:
+
+        w, h = img.size
+
+        orientation = (
+            "landscape"
+            if w >= h
+            else "portrait"
+        )
+
+    # ========================================
+    # Average RGB
+    # ========================================
+
+    stat = ImageStat.Stat(img)
+
+    r, g, b = stat.mean
+
+    # ========================================
+    # Black & White Detection
+    # ========================================
+
+    color_variance = (
+        abs(r - g) +
+        abs(g - b) +
+        abs(r - b)
+    )
+
+    is_bw = color_variance < 12
+
+    # ========================================
+    # Hue Binning
+    # ========================================
+
+    if is_bw:
+
+        color_bin = "bw"
+
+    else:
+
+        # Normalize
+        r_norm = r / 255.0
+        g_norm = g / 255.0
+        b_norm = b / 255.0
+
+        # RGB -> HSV
+        h, s, v = colorsys.rgb_to_hsv(
+            r_norm,
+            g_norm,
+            b_norm
+        )
+
+        # Low saturation behaves like BW
+        if s < 0.12:
+
+            color_bin = "bw"
+
+        else:
+
+            hue_deg = h * 360
+
+            # --------------------------------
+            # Hue bins
+            # --------------------------------
+
+            if hue_deg < 20 or hue_deg >= 340:
+
+                color_bin = "red"
+
+            elif hue_deg < 45:
+
+                color_bin = "orange"
+
+            elif hue_deg < 70:
+
+                color_bin = "yellow"
+
+            elif hue_deg < 160:
+
+                color_bin = "green"
+
+            elif hue_deg < 200:
+
+                color_bin = "cyan"
+
+            elif hue_deg < 260:
+
+                color_bin = "blue"
+
+            elif hue_deg < 300:
+
+                color_bin = "purple"
+
+            else:
+
+                color_bin = "magenta"
+
+    return {
+        "path": image_path,
+        "orientation": orientation,
+        "color_bin": color_bin
+    }
+    
+def balanced_color_sequence(image_files):
+
+    analyzed = [
+        analyze_image(f)
+        for f in image_files
+    ]
+
+    # ========================================
+    # BINS
+    # ========================================
+
+    bins = {
+        "bw": [],
+        "red": [],
+        "green": [],
+        "blue": []
+    }
+
+    for item in analyzed:
+
+        bins[
+            item["color_bin"]
+        ].append(item)
+
+    # ========================================
+    # SORT ORIENTATION WITHIN BINS
+    # ========================================
+
+    for key in bins:
+
+        portraits = [
+            x for x in bins[key]
+            if x["orientation"] == "portrait"
+        ]
+
+        landscapes = [
+            x for x in bins[key]
+            if x["orientation"] == "landscape"
+        ]
+
+        random.shuffle(bins[key])
+
+        mixed = []
+
+        toggle = True
+
+        while portraits or landscapes:
+
+            if toggle and portraits:
+
+                mixed.append(
+                    portraits.pop(0)
+                )
+
+            elif landscapes:
+
+                mixed.append(
+                    landscapes.pop(0)
+                )
+
+            toggle = not toggle
+
+        bins[key] = mixed
+
+    # ========================================
+    # INTERLEAVE COLOR BINS           ← added
+    # ========================================
+
+    ordered_bins = [
+        bins["red"],
+        bins["green"],
+        bins["blue"],
+        bins["bw"]
+    ]
+
+    sequence = []
+
+    while any(ordered_bins):
+
+        for bin_list in ordered_bins:
+
+            if bin_list:
+
+                sequence.append(
+                    bin_list.pop(0)
+                )
+
+    return [                          # ← added
+        item["path"]
+        for item in sequence
+    ]
+        
+# ============================================
+# HUE-ANGLE BALANCED SEQUENCING
+# ============================================
+
+def hue_balanced_sequence(image_files):
+
+    analyzed = [
+        analyze_image_hue(f)
+        for f in image_files
+    ]
+
+    # ========================================
+    # BINS
+    # ========================================
+
+    bins = {
+        "bw": [],
+        "red": [],
+        "orange": [],
+        "yellow": [],
+        "green": [],
+        "cyan": [],
+        "blue": [],
+        "purple": [],
+        "magenta": []
+    }
+
+    # ----------------------------------------
+    # Fill bins
+    # ----------------------------------------
+
+    for item in analyzed:
+
+        bins[
+            item["color_bin"]
+        ].append(item)
+
+    # ========================================
+    # RANDOMIZE WITHIN BINS
+    # ========================================
+
+    for key in bins:
+
+        random.shuffle(bins[key])
+
+    # ========================================
+    # ORIENTATION MIXING
+    # ========================================
+
+    for key in bins:
+
+        portraits = [
+            x for x in bins[key]
+            if x["orientation"] == "portrait"
+        ]
+
+        landscapes = [
+            x for x in bins[key]
+            if x["orientation"] == "landscape"
+        ]
+
+        mixed = []
+
+        toggle = True
+
+        while portraits or landscapes:
+
+            if toggle and portraits:
+
+                mixed.append(
+                    portraits.pop(0)
+                )
+
+            elif landscapes:
+
+                mixed.append(
+                    landscapes.pop(0)
+                )
+
+            toggle = not toggle
+
+        bins[key] = mixed
+
+    # ========================================
+    # INTERLEAVE COLOR BINS
+    # ========================================
+
+    ordered_bins = [
+        bins["red"],
+        bins["orange"],
+        bins["yellow"],
+        bins["green"],
+        bins["cyan"],
+        bins["blue"],
+        bins["purple"],
+        bins["magenta"],
+        bins["bw"]
+    ]
+
+    sequence = []
+
+    while any(ordered_bins):
+
+        for bin_list in ordered_bins:
+
+            if bin_list:
+
+                sequence.append(
+                    bin_list.pop(0)
+                )
+
+    return [
+        item["path"]
+        for item in sequence
+    ]
+
+# ============================================
+# ORDER MODE HANDLER
+# ============================================
+
+
+def get_ordered_images(image_files, mode):
+
+    # ----------------------------------------
+    # Mode 1
+    # Filename order
+    # ----------------------------------------
+
+    if mode == 1:
+
+        return {
+            "filename_order":
+            sorted(image_files)
+        }
+
+    # ----------------------------------------
+    # Mode 2
+    # Alternating luminance
+    # ----------------------------------------
+
+    elif mode == 2:
+
+        return {
+            "alternate_luminance":
+            alternate_brightness_order(
+                image_files
+            )
+        }
+
+    # ----------------------------------------
+    # Mode 3
+    # Smooth luminance flow
+    # ----------------------------------------
+
+    elif mode == 3:
+
+        return {
+            "smooth_luminance":
+            smooth_luminance_flow(
+                image_files
+            )
+        }
+
+    # ----------------------------------------
+    # Mode 4
+    # Output all versions
+    # ----------------------------------------
+
+    elif mode == 4:
+
+        return {
+
+            "filename_order":
+            sorted(image_files),
+
+            "alternate_luminance":
+            alternate_brightness_order(
+                image_files
+            ),
+
+            "smooth_luminance":
+            smooth_luminance_flow(
+                image_files
+            ),
+            "balanced_sequence":
+            balanced_color_sequence(
+                image_files
+            ),
+            "hue_balanced_sequence":
+            hue_balanced_sequence(
+                image_files
+            )
+        }
+        
+    elif mode == 5:
+
+        return {
+            "balanced_sequence":
+            balanced_color_sequence(
+                image_files
+            )
+        }
+        
+    # ----------------------------------------
+    # Mode 6
+    # Hue-angle balanced sequencing
+    # ----------------------------------------
+
+    elif mode == 6:
+
+        return {
+            "hue_balanced_sequence":
+            hue_balanced_sequence(
+                image_files
+            )
+        }
+        
+    # ----------------------------------------
+    # Mode 7
+    # Filename + RGB balanced
+    # ----------------------------------------
+
+    elif mode == 7:
+
+        return {
+
+            "filename_order":
+            sorted(image_files),
+
+            "balanced_sequence":
+            balanced_color_sequence(
+                image_files
+            )
+        }
+
+    # ----------------------------------------
+    # Fallback
+    # ----------------------------------------
+
+    else:
+
+        return {
+            "filename_order":
+            sorted(image_files)
+        }
+
+
+# ============================================
+# GET SUBFOLDERS
+# ============================================
+
+input_path = Path(INPUT_DIR)
+
+subfolders = sorted([
+    folder for folder in input_path.iterdir()
+    if folder.is_dir()
+])
+
+# ============================================
+# PROCESS EACH FOLDER
+# ============================================
+
+for folder in subfolders:
+
+    print("\n================================")
+    print(f"Processing folder: {folder.name}")
+
+    # ----------------------------------------
+    # Get image files
+    # ----------------------------------------
+
+    image_files = sorted([
+        f for f in folder.iterdir()
+        if f.suffix.lower() in SUPPORTED_EXTENSIONS
+    ])
+
+    if not image_files:
+
+        print("No supported images found.")
+        continue
+
+    # ----------------------------------------
+    # Generate ordered versions
+    # ----------------------------------------
+
+    ordered_versions = get_ordered_images(
+        image_files,
+        ORDER_MODE
+    )
+
+    # ========================================
+    # PROCESS EACH VERSION
+    # ========================================
+
+    for version_name, ordered_images in ordered_versions.items():
+
+        print(f"\nCreating version: {version_name}")
+
+        # ------------------------------------
+        # Output path
+        # ------------------------------------
+
+        output_path = (
+            Path(OUTPUT_DIR)
+            / f"{folder.name}_{version_name}.mp4"
+        )
+
+        # ------------------------------------
+        # Create video writer
+        # ------------------------------------
+
+        writer = imageio.get_writer(
+            str(output_path),
+            fps=FPS,
+            codec="libx264",
+            quality=8
+        )
+
+        # ------------------------------------
+        # Frames per image
+        # ------------------------------------
+
+        repeat_frames = int(
+            SECONDS_PER_IMAGE * FPS
+        )
+
+        # ====================================
+        # PROCESS IMAGES
+        # ====================================
+
+        for image_file in ordered_images:
+
+            print(f"  Adding: {image_file.name}")
+
+            # --------------------------------
+            # Load image
+            # --------------------------------
+
+            img = Image.open(image_file)
+
+            img = ImageOps.exif_transpose(img)
+
+            img = img.convert("RGB")
+
+            # --------------------------------
+            # Resize
+            # --------------------------------
+
+            img = resize_image(img)
+
+            # --------------------------------
+            # Ensure even dimensions
+            # --------------------------------
+
+            img = ensure_even_dimensions(img)
+
+            frame_array = np.array(img)
+
+            # --------------------------------
+            # Repeat frames
+            # --------------------------------
+
+            for _ in range(repeat_frames):
+
+                writer.append_data(
+                    frame_array
+                )
+
+        # ------------------------------------
+        # Finish video
+        # ------------------------------------
+
+        writer.close()
+
+        print(f"Saved: {output_path.name}")
+
+print("\nDone.")
